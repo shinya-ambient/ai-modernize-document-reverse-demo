@@ -1,0 +1,344 @@
+     H                                           Y
+      *===============================================================
+      * プログラム名: BILPRT
+      * 概要        : 月次請求書発行処理
+      * 作成日      : 1995/11/20  石川
+      * ※このプログラムは誰も触りたがらない。改修は自己責任で。
+      *   （2018/03 中村メモ）
+      * 更新履歴    :
+      *   1997/04/01 田中  消費税3%→5%
+      *   2002/08/15 佐藤  前月繰越対応
+      *   2009/01/05 ???   端数処理修正（顧客クレーム#4521）
+      *   2014/04/01 外注  消費税8%（至急対応）
+      *   2019/10/01 派遣  消費税10%・軽減税率  ※テスト不十分
+      *   2023/10/01 ???   インボイス制度対応  ※最低限の対応のみ
+      *===============================================================
+      *
+     FCUSTMASTIF   E           K        DISK
+     FORDERHDRIF   E           K        DISK
+     FORDERDTLIF   E           K        DISK
+     FITEMMASTIF   E           K        DISK
+     FBILHIST UF   E           K        DISK
+     FBILPRT  O    E             132    PRINTER
+      *
+     D WSDATE        S              8  0
+     D WSBILNO       S             10  0
+     D WSCUSTCD      S              8
+     D WSCNM         S             40
+     D WSADR1        S             40
+     D WSADR2        S             40
+     D WSTEL         S             15
+     D WSTOTAL       S             13  2
+     D WSTAX10       S             13  2
+     D WSTAX08       S             13  2
+     D WSTAXAMT      S             13  2
+     D WSSUBT        S             13  2
+     D WSKURI        S             13  2
+     D WSSEIKYU      S             15  2
+     D WSNYUKIN      S             13  2
+     D WSPAGNO       S              3  0
+     D WSLINNO       S              2  0
+     D WSMAXLN       S              2  0 INZ(40)
+     D WSORDNO       S             10
+     D WSITEMCD      S             12
+     D WSITNM        S             40
+     D WSQTY         S              9  0
+     D WSUPRC        S             11  2
+     D WSAMT         S             13  2
+     D WSTXKBN       S              1
+     D WSTXRT        S              5  3
+     D WSDTLAMT      S             13  2
+     D WSERR         S              1
+     D WSCNT         S              5  0 INZ(0)
+     D WSECNT        S              5  0 INZ(0)
+     D WSINVNO       S             13
+      *
+      * 2023追加 インボイス番号（適格請求書発行事業者番号）
+     D WSTEKNO       S             14    INZ('T1234567890123')
+      *
+      * ====== メイン処理 ======
+     C                   EXSR      INIT
+     C                   READ      CUSTMAST                           90
+     C     *IN90         DOWEQ     *OFF
+     C                   EXSR      PRCCUST
+     C                   READ      CUSTMAST                           90
+     C                   ENDDO
+     C                   EXSR      ENDJOB
+     C                   SETON                                        LR
+     C                   RETURN
+      *
+      * ====== 初期処理 ======
+     C     INIT          BEGSR
+     C                   TIME                    WSDATE
+     C                   Z-ADD     0             WSBILNO
+      * 請求番号採番（日付＋連番）
+     C                   MOVEL     WSDATE        WSBILNO
+     C                   ENDSR
+      *
+      * ====== 得意先別処理 ======
+     C     PRCCUST       BEGSR
+     C                   MOVEL     CCUSTCD       WSCUSTCD
+     C                   MOVEL     CCUSTNM       WSCNM
+     C                   MOVEL     CADDR1        WSADR1
+     C                   MOVEL     CADDR2        WSADR2
+     C                   MOVEL     CTEL          WSTEL
+      *
+      * 締日チェック ※20日締め/末締めの2パターン
+     C     CCLSDAY       IFEQ      20
+     C     WSDATE        IFGT      20
+      * 当月20日締め
+     C                   ELSE
+      * 来月20日締め→スキップ
+     C                   LEAVESR
+     C                   ENDIF
+     C                   ELSE
+      * 末締め→常に処理
+     C                   ENDIF
+      *
+      * 前月繰越取得  2002追加
+     C     WSCUSTCD      CHAIN     BILHIST                       91
+     C     *IN91         IFEQ      *OFF
+     C                   Z-ADD     BHKURI        WSKURI
+     C                   Z-ADD     BHNYUKN       WSNYUKIN
+     C                   ELSE
+     C                   Z-ADD     0             WSKURI
+     C                   Z-ADD     0             WSNYUKIN
+     C                   ENDIF
+      *
+      * 初期化
+     C                   Z-ADD     0             WSTOTAL
+     C                   Z-ADD     0             WSTAX10
+     C                   Z-ADD     0             WSTAX08
+     C                   Z-ADD     0             WSTAXAMT
+     C                   Z-ADD     0             WSSUBT
+     C                   Z-ADD     1             WSPAGNO
+     C                   Z-ADD     0             WSLINNO
+     C                   ADD       1             WSBILNO
+      *
+      * インボイス番号設定  2023追加
+     C     CCUSTTP       IFEQ      'C'
+      * 法人→インボイス番号あり
+     C                   MOVEL     WSTEKNO       WSINVNO
+     C                   ELSE
+      * 個人→なし
+     C                   MOVEL     *BLANKS       WSINVNO
+     C                   ENDIF
+      *
+      * 請求書ヘッダ印刷
+     C                   EXSR      PRTHDR
+      *
+      * 受注データ読込
+     C     WSCUSTCD      SETLL     ORDERHDR
+     C     WSCUSTCD      READE     ORDERHDR                      92
+     C     *IN92         DOWEQ     *OFF
+      *
+      * ステータスチェック（出荷済のみ）
+     C     HSTATUS       IFEQ      '50'
+     C                   EXSR      PRCORD
+     C                   ENDIF
+      *
+     C     WSCUSTCD      READE     ORDERHDR                      92
+     C                   ENDDO
+      *
+      * 合計計算
+     C                   EXSR      CALCTOT
+      *
+      * 請求書フッタ印刷
+     C                   EXSR      PRTFTR
+      *
+      * 請求履歴更新
+     C                   EXSR      UPDHIST
+      *
+     C                   ADD       1             WSCNT
+     C                   ENDSR
+      *
+      * ====== 受注別処理 ======
+     C     PRCORD        BEGSR
+     C                   MOVEL     HORDNO        WSORDNO
+      *
+      * 明細読込
+     C     WSORDNO       SETLL     ORDERDTL
+     C     WSORDNO       READE     ORDERDTL                      93
+     C     *IN93         DOWEQ     *OFF
+      *
+     C                   MOVEL     LITEMCD       WSITEMCD
+     C                   Z-ADD     LQTY          WSQTY
+     C                   Z-ADD     LUPRICE       WSUPRC
+     C                   Z-ADD     LAMT          WSAMT
+     C                   MOVEL     LTAXKBN       WSTXKBN
+      *
+      * 商品名取得
+     C     WSITEMCD      CHAIN     ITEMMAST                      94
+     C     *IN94         IFEQ      *OFF
+     C                   MOVEL     ITITMNM       WSITNM
+     C                   ELSE
+     C                   MOVEL     '*** 不明 ***'WSITNM
+     C                   ADD       1             WSECNT
+     C                   ENDIF
+      *
+      * 税率別集計  ※2019対応
+     C     WSTXKBN       IFEQ      '0'
+     C                   ADD       WSAMT         WSTAX10
+     C                   ELSEIF    WSTXKBN       IFEQ      '1'
+     C                   ADD       WSAMT         WSTAX08
+     C                   ENDIF
+      *
+     C                   ADD       WSAMT         WSSUBT
+      *
+      * 明細印刷
+     C                   EXSR      PRTDTL
+      *
+     C     WSORDNO       READE     ORDERDTL                      93
+     C                   ENDDO
+     C                   ENDSR
+      *
+      * ====== 合計計算 ======
+     C     CALCTOT       BEGSR
+      *
+      * 消費税計算（税率別に端数切捨）
+      * ※2019 暫定対応  テスト不十分だが本番投入
+      *   標準税率 10%
+     C     WSTAX10       MULT      0.10          WSDTLAMT
+     C                   Z-ADD     WSDTLAMT      WSTAXAMT
+      * ※小数切捨
+     C                   MVR                     WSDTLAMT
+      *   軽減税率 8%
+     C     WSTAX08       MULT      0.08          WSDTLAMT
+     C                   ADD       WSDTLAMT      WSTAXAMT
+      *
+      * ★★★ 注意 ★★★
+      * 端数処理が2009の修正以降おかしいという報告あり
+      * 1円未満切捨にしているはずだが、得意先によって
+      * 四捨五入になっているケースがある
+      * →原因不明。再現条件も不明。（2018 中村メモ）
+      *
+      * 合計計算
+     C                   Z-ADD     WSSUBT        WSTOTAL
+     C     WSTOTAL       ADD       WSTAXAMT      WSSEIKYU
+      *
+      * 前月繰越加算
+     C     WSSEIKYU      ADD       WSKURI        WSSEIKYU
+      *
+      * 入金差引
+     C     WSSEIKYU      SUB       WSNYUKIN      WSSEIKYU
+      *
+     C                   ENDSR
+      *
+      * ====== 請求書ヘッダ印刷 ======
+     C     PRTHDR        BEGSR
+     C                   EXCEPT    BILHDR
+     C                   ENDSR
+      *
+      * ====== 明細印刷 ======
+     C     PRTDTL        BEGSR
+     C                   ADD       1             WSLINNO
+      *
+      * 改ページチェック
+     C     WSLINNO       IFGT      WSMAXLN
+     C                   EXCEPT    BILFTR1
+     C                   ADD       1             WSPAGNO
+     C                   EXCEPT    BILHDR
+     C                   Z-ADD     1             WSLINNO
+     C                   ENDIF
+      *
+     C                   EXCEPT    BILDTL
+     C                   ENDSR
+      *
+      * ====== 請求書フッタ印刷 ======
+     C     PRTFTR        BEGSR
+      * 2023追加 インボイス対応
+     C     WSINVNO       IFNE      *BLANKS
+     C                   EXCEPT    BILINV
+     C                   ENDIF
+      *
+     C                   EXCEPT    BILFTR2
+     C                   ENDSR
+      *
+      * ====== 請求履歴更新 ======
+     C     UPDHIST       BEGSR
+     C     WSCUSTCD      CHAIN     BILHIST                       95
+     C     *IN95         IFEQ      *OFF
+      * 既存レコード更新
+     C                   Z-ADD     WSSEIKYU      BHKURI
+     C                   Z-ADD     0             BHNYUKN
+     C                   MOVEL     WSDATE        BHLSTDT
+     C                   Z-ADD     WSBILNO       BHBILNO
+     C                   UPDATE    BILHREC
+     C                   ELSE
+      * 新規レコード作成
+     C                   MOVEL     WSCUSTCD      BHCUST
+     C                   Z-ADD     WSSEIKYU      BHKURI
+     C                   Z-ADD     0             BHNYUKN
+     C                   MOVEL     WSDATE        BHLSTDT
+     C                   Z-ADD     WSBILNO       BHBILNO
+     C                   WRITE     BILHREC
+     C                   ENDIF
+     C                   ENDSR
+      *
+      * ====== 終了処理 ======
+     C     ENDJOB        BEGSR
+     C     WSCNT         DSPLY
+     C                   ENDSR
+      *
+      * ====== 帳票フォーマット ======
+     OBILPRT  E            BILHDR      1
+     O                                           35 '請 求 書'
+     O                         WSCNM              80
+     O                                           85 '御中'
+     O                         WSADR1            130
+     O        E            BILHDR      1
+     O                         WSADR2            130
+     O                                           40 '請求番号:'
+     O                         WSBILNO    Z      55
+     O                                           80 '請求日:'
+     O                         WSDATE     Y      95
+     O        E            BILHDR      1
+     O                                           10 '商品コード'
+     O                                           55 '商品名'
+     O                                           70 '数量'
+     O                                           90 '単価'
+     O                                          115 '金額'
+     O                                          125 '税'
+     O                                          130 '---'
+     O        E            BILDTL      1
+     O                         WSITEMCD           12
+     O                         WSITNM             55
+     O                         WSQTY      Z      70
+     O                         WSUPRC   1 Z      92
+     O                         WSAMT    1 Z     115
+     O                         WSTXKBN          120
+     O        E            BILINV      2
+     O                                           50 '適格請求書発行事業者-
+     O                                              番号:'
+     O                         WSINVNO            70
+     O        E            BILFTR1     2
+     O                                           60 '--- 次ページへ続く -
+     O                                              --'
+     O        E            BILFTR2     3
+     O                                          130 '============='
+     O        E            BILFTR2     1
+     O                                           60 '小計（税抜）'
+     O                         WSSUBT   1 Z     115
+     O        E            BILFTR2     1
+     O                                           60 '消費税（10%対象）'
+     O                         WSTAX10  1 Z      90
+     O                                          108 '税額'
+     O*                        WSTAXAMT 1 Z     115     ※計算済の税額
+     O        E            BILFTR2     1
+     O                                           60 '消費税（ 8%対象）'
+     O                         WSTAX08  1 Z      90
+     O        E            BILFTR2     1
+     O                                           60 '消費税合計'
+     O                         WSTAXAMT 1 Z     115
+     O        E            BILFTR2     1
+     O                                           60 '前月繰越'
+     O                         WSKURI   1 Z     115
+     O        E            BILFTR2     1
+     O                                           60 'ご入金'
+     O                         WSNYUKIN 1 Z     115
+     O        E            BILFTR2     2
+     O                                          130 '============='
+     O        E            BILFTR2     1
+     O                                           60 'ご請求金額'
+     O                         WSSEIKYU 1 Z     118
+     O                                          130 '円'
